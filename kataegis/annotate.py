@@ -15,18 +15,24 @@ import matplotlib.patches as mpatches
 
 import cyvcf2
 
-DPI=300
+DPI=150
 
 COLORS = {
-  'C>A': '#0000c0',
+  'C>A': '#00BCF2',
   'C>G': '#000000',
-  'C>T': '#900000',
-  'T>A': '#00f0f0',
-  'T>C': '#f0f000',
-  'T>G': '#00f000'
+  'C>T': '#E82818',
+  'T>A': '#CAC8C9',
+  'T>C': '#9BD357',
+  'T>G': '#EEC6C4'
 }
 
 COMP = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+
+def get_kataegis(v):
+  try:
+    return v.INFO['kataegis'] == 'YES'
+  except KeyError:
+    return False
 
 def get_imd(v):
   try:
@@ -42,13 +48,14 @@ def color(v):
     return comp, COLORS[comp]
   else:
     logging.debug('unrecognized mutation %s', v)
-    return 'other', '#909090'
+    return 'Other', '#E3FF00'
 
-def main(count, mean, plot_fn):
+def main(count, mean, plot_fn, just_kataegis):
   logging.info('reading vcf from stdin...')
   vcf_in = cyvcf2.VCF('-')
 
   vcf_in.add_info_to_header({'ID': 'imd', 'Description': 'Inter mutation distance', 'Type':'Character', 'Number': '1'})
+  vcf_in.add_info_to_header({'ID': 'kataegis', 'Description': 'Inter mutation distance', 'Type':'Character', 'Number': '1'})
   sys.stdout.write(vcf_in.raw_header)
 
   q = [] # queue of points under consideration
@@ -65,9 +72,10 @@ def main(count, mean, plot_fn):
         # in kataegis
         r[q[-1].CHROM].append((kataegis_start, kataegis_end))
       for v in q:
-        sys.stdout.write(str(v))
+        if not just_kataegis or get_kataegis(v):
+          sys.stdout.write(str(v))
         if get_imd(v) is not None:
-          p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v)))
+          p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v), get_kataegis(v)))
           m[v.CHROM].append(None)
       q = []
       kataegis_start = None
@@ -86,15 +94,18 @@ def main(count, mean, plot_fn):
         if kataegis_start is None:
           kataegis_start = q[0].POS
         kataegis_end = q[-1].POS
+        for v in q:
+          v.INFO['kataegis'] = 'YES'
       else: # no kataegis
         #logging.debug('no kataegis found with mean %i at %s:%i', a, variant.CHROM, variant.POS)
         if kataegis_start is not None:
           r[variant.CHROM].append((kataegis_start, kataegis_end))
       # pop item off the queue and write
       v = q.pop(0)
-      sys.stdout.write(str(v))
+      if not just_kataegis or get_kataegis(v):
+        sys.stdout.write(str(v))
       if get_imd(v) is not None:
-        p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v)))
+        p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v), get_kataegis(v)))
         m[v.CHROM].append(a)
 
   # write out the queue
@@ -104,36 +115,49 @@ def main(count, mean, plot_fn):
 
   # write out the queue
   for v in q:
-    sys.stdout.write(str(v))
+    if not just_kataegis or get_kataegis(v):
+      sys.stdout.write(str(v))
     if get_imd(v) is not None:
-      p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v)))
+      p[v.CHROM].append((v.POS, '{}>{}'.format(v.REF, v.ALT[0]), get_imd(v), get_kataegis(v)))
       m[v.CHROM].append(None)
  
   # plot
   if plot_fn is not None:
     logging.info('plotting %i points and %i regions of kataegis...', sum([len(p[c]) for c in p]), len(r))
+    # points
     xs = []
     ms = []
     ys = []
     cs = []
+    ks = []
     chroms = []
     patches = []
     colors = set()
     n = 0
     last_n = 0
+    kstart = None
     for ch in c:
       if ch in p:
         for x, mv in zip(p[ch], m[ch]):
           xs.append(n)
           ys.append(max(1, x[2]))
           ms.append(mv)
+          if x[3]:
+            if kstart is None:
+              kstart = n
+          else:
+            if kstart is not None:
+              ks.append((kstart, n))
+              kstart = None
           name, col = color(x[1])
           if name not in colors:
             colors.add(name)
             patches.append(mpatches.Patch(color=col, label=name))
-            logging.info('%s %s', col, name)
           cs.append(col) # todo legend
           n += 1
+        if kstart is not None:
+          ks.append((kstart, n))
+          kstart = None
       chroms.append((ch, last_n, n))
       last_n = n
 
@@ -141,7 +165,7 @@ def main(count, mean, plot_fn):
     logging.info('mean range is %i to %i for %i points', min([m for m in ms if m is not None]), max([m for m in ms if m is not None]), n)
     
     #matplotlib.style.use('seaborn')
-    fig = plt.figure(figsize=(18, 8))
+    fig = plt.figure(figsize=(24, 8))
     ax = fig.add_subplot(111)
     #ax.set_ylim(bottom=1)
     ax.set_yscale('log', nonposy='clip')
@@ -149,6 +173,11 @@ def main(count, mean, plot_fn):
     ax.scatter(xs, ys, c=cs, s=2, alpha=0.5)    
     ax.plot(xs, ms, color='#003090', linewidth=2, alpha=0.5)
     plt.legend(handles=patches)
+
+    # regions
+    for k in ks:
+      logging.info('kataegis for mutations %i to %i', k[0], k[1])
+      ax.axvspan(k[0], k[1], 0, 1, color='#ff0000', alpha=0.3)
   
     # chromosomes
     xticks = []
@@ -170,6 +199,7 @@ if __name__ == '__main__':
   parser.add_argument('--count', default=6, type=int, help='number of mutations to stay below mean')
   parser.add_argument('--mean', default=1000, type=int, help='stay below this mean to identify kataegis')
   parser.add_argument('--plot', required=False, help='plot filename')
+  parser.add_argument('--just_kataegis', action='store_true', help='only kataegis is written')
   parser.add_argument('--verbose', action='store_true', help='more logging')
   args = parser.parse_args()
   if args.verbose:
@@ -177,4 +207,4 @@ if __name__ == '__main__':
   else:
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 
-  main(args.count, args.mean, args.plot)
+  main(args.count, args.mean, args.plot, args.just_kataegis)
