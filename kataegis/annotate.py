@@ -47,10 +47,49 @@ def color(v):
     comp = '{}>{}'.format(COMP[v[0]], COMP[v[2]])
     return comp, COLORS[comp]
   else:
-    logging.debug('unrecognized mutation %s', v)
+    #logging.debug('unrecognized mutation %s', v)
     return 'Other', '#E3FF00'
 
-def main(count, mean, plot_fn, just_kataegis):
+def plot_zoomed(plot_prefix, pch, kstart, kfinish, last_n, ch, xstart, xfinish, padding):
+  xs = []
+  ys = []
+  cs = [] # color of each point (context)
+  patches = []
+  colors = set()
+  idxstart = max(0, kstart - last_n - padding)
+  idxfinish = min(len(pch) - 1, kfinish - last_n + padding)
+  logging.info('adding points from %i to %i', idxstart, idxfinish)
+
+  fig = plt.figure(figsize=(12, 8))
+  ax = fig.add_subplot(111)
+  first = True
+  for idx in range(idxstart, idxfinish):
+    x = pch[idx]
+    xs.append(idx)
+    ys.append(max(1, x[2]))
+    name, col = color(x[1])
+    if name not in colors:
+      colors.add(name)
+      patches.append(mpatches.Patch(color=col, label=name))
+    if x[3] and first: # kataegis
+      first = False
+      ax.annotate(x[0], xy=(xs[-1], ys[-1]), textcoords='data')
+    cs.append(col)
+
+  #ax.set_ylim(bottom=1)
+  ax.set_yscale('log', nonposy='clip')
+  ax.grid(axis='y')
+  #logging.info('xs: %s, ys: %s', xs, ys)
+  ax.scatter(xs, ys, c=cs, s=6, alpha=1)    
+  ax.set_title('Chromosome {} from {} to {}'.format(ch, pch[idxstart][0], pch[idxfinish][0]))
+  #ax.plot(xs, ms, color='#003090', linewidth=2, alpha=0.5)
+  plt.legend(handles=patches)
+  plt.tight_layout()
+  plt.savefig('{}{}-{}-{}.png'.format(plot_prefix, ch, pch[idxstart][0], pch[idxfinish][0]), transparent=False, dpi=DPI)
+  plt.close()
+
+ 
+def main(count, mean, plot_genome, plot_prefix, just_kataegis, plot_prefix_padding):
   logging.info('reading vcf from stdin...')
   vcf_in = cyvcf2.VCF('-')
 
@@ -60,8 +99,8 @@ def main(count, mean, plot_fn, just_kataegis):
 
   q = [] # queue of points under consideration
   r = collections.defaultdict(list) # regions of kataegis
-  p = collections.defaultdict(list) # points to plot
-  m = collections.defaultdict(list) # points to plot
+  p = collections.defaultdict(list) # points to plot - position, context, imd, kataegis
+  m = collections.defaultdict(list) # points to plot - means
   c = [] # chroms
   kataegis_start = None
   for i, variant in enumerate(vcf_in):
@@ -90,7 +129,7 @@ def main(count, mean, plot_fn, just_kataegis):
       a = sum(imds) / len(imds)
       if a < mean:
         # give them all kataegis
-        logging.info('kataegis found with mean %i at %s:%i', a, v.CHROM, v.POS)
+        #logging.info('kataegis found with mean %i at %s:%i', a, v.CHROM, v.POS)
         if kataegis_start is None:
           kataegis_start = q[0].POS
         kataegis_end = q[-1].POS
@@ -122,41 +161,42 @@ def main(count, mean, plot_fn, just_kataegis):
       m[v.CHROM].append(None)
  
   # plot
-  if plot_fn is not None:
+  if plot_genome is not None:
     logging.info('plotting %i points and %i regions of kataegis...', sum([len(p[c]) for c in p]), len(r))
     # points
-    xs = []
-    ms = []
-    ys = []
-    cs = []
-    ks = []
+    xs = [] # x-axis
+    ms = [] # mean
+    ys = [] # distance to last variant
+    cs = [] # color of each point (context)
+    ks = [] # regions of kataegis
     chroms = []
     patches = []
     colors = set()
     n = 0
     last_n = 0
-    kstart = None
+    kstart, xstart = (None, None)
     for ch in c:
       if ch in p:
         for x, mv in zip(p[ch], m[ch]):
           xs.append(n)
           ys.append(max(1, x[2]))
           ms.append(mv)
-          if x[3]:
+          if x[3]: # it's kataegis
             if kstart is None:
               kstart = n
+              xstart = x
           else:
             if kstart is not None:
-              ks.append((kstart, n))
+              ks.append((kstart, n, last_n, ch, xstart, x))
               kstart = None
           name, col = color(x[1])
           if name not in colors:
             colors.add(name)
             patches.append(mpatches.Patch(color=col, label=name))
-          cs.append(col) # todo legend
+          cs.append(col)
           n += 1
         if kstart is not None:
-          ks.append((kstart, n))
+          ks.append((kstart, n, last_n, ch, xstart, x)) # remember this region
           kstart = None
       chroms.append((ch, last_n, n))
       last_n = n
@@ -164,6 +204,14 @@ def main(count, mean, plot_fn, just_kataegis):
     logging.info('y range is %i to %i for %i points', min(ys), max(ys), n)
     logging.info('mean range is %i to %i for %i points', min([m for m in ms if m is not None]), max([m for m in ms if m is not None]), n)
     
+
+    # kataegis regions
+    if plot_prefix: # zoomed in version
+      for k in ks:
+        kstart, kfinish, last_n, ch, xstart, xfinish = k
+        logging.info('showing mutations on chromosome %s from %s to %s...', ch, xstart, xfinish)
+        plot_zoomed(plot_prefix, p[ch], kstart, kfinish, last_n, ch, xstart, xfinish, plot_prefix_padding)
+
     #matplotlib.style.use('seaborn')
     fig = plt.figure(figsize=(24, 8))
     ax = fig.add_subplot(111)
@@ -174,7 +222,6 @@ def main(count, mean, plot_fn, just_kataegis):
     ax.plot(xs, ms, color='#003090', linewidth=2, alpha=0.5)
     plt.legend(handles=patches)
 
-    # regions
     for k in ks:
       logging.info('kataegis for mutations %i to %i', k[0], k[1])
       ax.axvspan(k[0], k[1], 0, 1, color='#ff0000', alpha=0.3)
@@ -190,7 +237,7 @@ def main(count, mean, plot_fn, just_kataegis):
     ax.set_xticklabels(xlabels)
   
     plt.tight_layout()
-    plt.savefig(plot_fn, transparent=False, dpi=DPI)
+    plt.savefig(plot_genome, transparent=False, dpi=DPI)
 
   logging.info('done')
 
@@ -198,8 +245,10 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Assess MSI')
   parser.add_argument('--count', default=6, type=int, help='number of mutations to stay below mean')
   parser.add_argument('--mean', default=1000, type=int, help='stay below this mean to identify kataegis')
-  parser.add_argument('--plot', required=False, help='plot filename')
-  parser.add_argument('--just_kataegis', action='store_true', help='only kataegis is written')
+  parser.add_argument('--plot_genome', required=False, help='plot filename for complete genome')
+  parser.add_argument('--plot_prefix', required=False, help='plot filename for kataegis regions')
+  parser.add_argument('--plot_prefix_padding', required=False, default=100, help='padding each side of kataegis to plot in variants')
+  parser.add_argument('--just_kataegis', action='store_true', help='only kataegis is written to vcf')
   parser.add_argument('--verbose', action='store_true', help='more logging')
   args = parser.parse_args()
   if args.verbose:
@@ -207,4 +256,4 @@ if __name__ == '__main__':
   else:
     logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 
-  main(args.count, args.mean, args.plot, args.just_kataegis)
+  main(args.count, args.mean, args.plot_genome, args.plot_prefix, args.just_kataegis, args.plot_prefix_padding)
