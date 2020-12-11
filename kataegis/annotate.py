@@ -201,8 +201,11 @@ def main(count, mean, plot_genome, plot_prefix, just_kataegis, plot_prefix_paddi
       chroms.append((ch, last_n, n))
       last_n = n
 
-    logging.info('y range is %i to %i for %i points', min(ys), max(ys), n)
-    logging.info('mean range is %i to %i for %i points', min([m for m in ms if m is not None]), max([m for m in ms if m is not None]), n)
+    if len(ys) > 0:
+      logging.info('y range is %i to %i for %i points', min(ys), max(ys), n)
+    all_ms = [m for m in ms if m is not None]
+    if len(all_ms) > 0:
+      logging.info('mean range is %i to %i for %i points', min(all_ms), max(all_ms), n)
     
 
     # kataegis regions
